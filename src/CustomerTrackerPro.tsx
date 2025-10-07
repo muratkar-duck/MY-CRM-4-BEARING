@@ -1,0 +1,1298 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Plus,
+  Calendar,
+  MapPin,
+  Phone,
+  Mail,
+  Edit,
+  Trash2,
+  Clock,
+  AlertCircle,
+  Upload,
+  Download,
+  Search,
+  Bell,
+  Sun,
+  Moon,
+  CheckCircle2,
+  Link as LinkIcon,
+  Tag,
+  X,
+  Filter,
+  LayoutGrid,
+  Table as TableIcon,
+} from 'lucide-react';
+
+/**
+ * CustomerTrackerPro – kişisel CRM (tek dosya komponent)
+ * Özellikler:
+ * - localStorage persist
+ * - Arama + filtreler (durum, şehir, etiket)
+ * - Quick Add (hızlı ekleme)
+ * - CSV dışa aktar / içe aktar
+ * - Aktivite Timeline (tüm statü değişiklikleri ve önemli olaylar)
+ * - Hatırlatıcı paneli: bugün mesaj atılacaklar, bugünkü ziyaretler, takip zamanı gelenler
+ * - Pipeline progress bar
+ * - Basit takvim görünümü (yaklaşan 30 gün)
+ * - Mobil kart görünümü + tablo görünümü arasında geçiş
+ * - Dark mode toggle
+ * - (Opsiyonel) Tarayıcı bildirimi izni + uyarı gönderme
+ */
+
+const STATUS_OPTIONS = {
+  connection_sent: {
+    label: 'Bağlantı İsteği Gönderildi',
+    color: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200',
+  },
+  connection_accepted: {
+    label: 'Bağlantı Kabul Edildi',
+    color:
+      'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200',
+  },
+  message_sent: {
+    label: 'Mesaj Gönderildi',
+    color:
+      'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200',
+  },
+  replied: {
+    label: 'Geri Dönüş Aldı',
+    color:
+      'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200',
+  },
+  visit_requested: {
+    label: 'Ziyaret Talep Edildi',
+    color:
+      'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200',
+  },
+  visit_pending: {
+    label: 'Ziyaret Beklemede (Optimizasyon İçin)',
+    color:
+      'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200',
+  },
+  visit_scheduled: {
+    label: 'Ziyaret Planlandı',
+    color:
+      'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-200',
+  },
+  email_redirect: {
+    label: 'E-posta Yönlendirmesi',
+    color: 'bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-200',
+  },
+  completed: {
+    label: 'Tamamlandı',
+    color:
+      'bg-emerald-200 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-200',
+  },
+};
+
+const STORAGE_KEY = 'customer_tracker_pro_v1';
+const todayISO = () => new Date().toISOString().split('T')[0];
+
+const blankForm = {
+  companyName: '',
+  contactName: '',
+  city: '',
+  phone: '',
+  email: '',
+  status: 'connection_sent',
+  connectionDate: '',
+  messageDate: '',
+  visitDate: '',
+  notes: '',
+  tags: [],
+};
+
+function useLocalStorageState(key, initialValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch {}
+  }, [key, state]);
+  return [state, setState];
+}
+
+function csvEscape(value) {
+  if (value == null) return '';
+  const s = String(value);
+  if (s.includes(',') || s.includes('\n') || s.includes('"')) {
+    return '"' + s.replaceAll('"', '""') + '"';
+  }
+  return s;
+}
+
+function toCSV(rows) {
+  const headers = [
+    'id',
+    'companyName',
+    'contactName',
+    'city',
+    'phone',
+    'email',
+    'status',
+    'connectionDate',
+    'messageDate',
+    'visitDate',
+    'notes',
+    'tags',
+  ];
+  const lines = [headers.join(',')];
+  rows.forEach((r) => {
+    const vals = headers.map((h) =>
+      h === 'tags' ? (r.tags || []).join('|') : r[h] ?? ''
+    );
+    lines.push(vals.map(csvEscape).join(','));
+  });
+  return lines.join('\n');
+}
+
+function fromCSV(text) {
+  // Minimal CSV parser for this schema (expects no line breaks inside fields except quoted)
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const header = lines[0].split(',');
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    // simple split respecting quotes
+    const row = [];
+    let cur = '';
+    let inQ = false;
+    for (let j = 0; j < lines[i].length; j++) {
+      const ch = lines[i][j];
+      if (ch === '"') {
+        if (inQ && lines[i][j + 1] === '"') {
+          cur += '"';
+          j++;
+        } else inQ = !inQ;
+      } else if (ch === ',' && !inQ) {
+        row.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    row.push(cur);
+    const obj = {};
+    header.forEach((h, idx) => {
+      obj[h] = row[idx] ?? '';
+    });
+    if (obj.tags) obj.tags = obj.tags.split('|').filter(Boolean);
+    if (!obj.id) obj.id = Date.now() + Math.random();
+    out.push(obj);
+  }
+  return out;
+}
+
+function ProgressBar({ value }) {
+  return (
+    <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+      <div
+        className="h-full bg-blue-600"
+        style={{ width: `${Math.round(value * 100)}%` }}
+      />
+    </div>
+  );
+}
+
+function TagChip({ label, onRemove }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 mr-1 mb-1">
+      <Tag size={12} /> {label}
+      {onRemove && (
+        <button onClick={onRemove} className="opacity-70 hover:opacity-100">
+          <X size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+export default function CustomerTrackerPro() {
+  const [customers, setCustomers] = useLocalStorageState(STORAGE_KEY, []);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(blankForm);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [cityFilter, setCityFilter] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
+  const [dark, setDark] = useLocalStorageState('ctp_dark', false);
+  const [view, setView] = useLocalStorageState('ctp_view', 'table'); // table | cards
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (dark) root.classList.add('dark');
+    else root.classList.remove('dark');
+  }, [dark]);
+
+  const cities = useMemo(
+    () => [...new Set(customers.map((c) => c.city).filter(Boolean))].sort(),
+    [customers]
+  );
+  const allTags = useMemo(
+    () => [...new Set(customers.flatMap((c) => c.tags || []))].sort(),
+    [customers]
+  );
+
+  const filtered = useMemo(
+    () =>
+      customers.filter((c) => {
+        const q = query.trim().toLowerCase();
+        const inText =
+          !q ||
+          [
+            c.companyName,
+            c.contactName,
+            c.city,
+            c.notes,
+            (c.tags || []).join(' '),
+          ]
+            .filter(Boolean)
+            .some((v) => String(v).toLowerCase().includes(q));
+        const st = statusFilter === 'all' || c.status === statusFilter;
+        const ct = !cityFilter || c.city === cityFilter;
+        const tg = !tagFilter || (c.tags || []).includes(tagFilter);
+        return inText && st && ct && tg;
+      }),
+    [customers, query, statusFilter, cityFilter, tagFilter]
+  );
+
+  const sameCity = (city, excludeId) =>
+    customers.filter(
+      (c) =>
+        c.city === city &&
+        c.id !== excludeId &&
+        ['visit_requested', 'visit_scheduled', 'visit_pending'].includes(
+          c.status
+        )
+    );
+
+  // Pipeline progress ratio
+  function progressOf(c) {
+    const order = [
+      'connection_sent',
+      'connection_accepted',
+      'message_sent',
+      'replied',
+      'visit_requested',
+      'visit_pending',
+      'visit_scheduled',
+      'email_redirect',
+      'completed',
+    ];
+    const idx = order.indexOf(c.status);
+    return idx < 0 ? 0 : idx / (order.length - 1);
+  }
+
+  // Activity log helpers
+  const addLog = (custId, type, detail) => {
+    setCustomers((prev) =>
+      prev.map((c) => {
+        if (c.id !== custId) return c;
+        const entry = { date: new Date().toISOString(), type, detail };
+        const activityLog = [...(c.activityLog || []), entry];
+        return { ...c, activityLog, updatedAt: new Date().toISOString() };
+      })
+    );
+  };
+
+  // Form handlers
+  const resetForm = () => {
+    setForm(blankForm);
+    setEditing(null);
+    setShowForm(false);
+  };
+
+  const handleSubmit = (e) => {
+    e?.preventDefault();
+    if (!form.companyName || !form.contactName || !form.city) {
+      alert('Firma adı, iletişim kişisi ve şehir zorunlu.');
+      return;
+    }
+    if (editing) {
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === editing.id
+            ? {
+                ...c,
+                ...form,
+                id: editing.id,
+              }
+            : c
+        )
+      );
+      addLog(editing.id, 'update', 'Kayıt güncellendi');
+    } else {
+      const id = Date.now() + Math.random();
+      const newRec = {
+        ...form,
+        id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        activityLog: [],
+      };
+      setCustomers((prev) => [...prev, newRec]);
+      // ilk oluşturma logu
+      setTimeout(() => addLog(id, 'create', 'Kayıt oluşturuldu'), 0);
+    }
+    resetForm();
+  };
+
+  const startEdit = (c) => {
+    setForm({ ...c, tags: c.tags || [] });
+    setEditing(c);
+    setShowForm(true);
+  };
+
+  const removeCustomer = (id) => {
+    if (confirm('Bu müşteriyi silmek istediğinizden emin misiniz?')) {
+      setCustomers((prev) => prev.filter((c) => c.id !== id));
+    }
+  };
+
+  const setStatus = (id, newStatus) => {
+    setCustomers((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        const updates = { ...c, status: newStatus };
+        if (newStatus === 'message_sent' && !c.messageDate)
+          updates.messageDate = todayISO();
+        if (newStatus === 'connection_accepted' && !c.connectionDate)
+          updates.connectionDate = updates.connectionDate || todayISO();
+        if (newStatus === 'visit_scheduled' && !c.visitDate)
+          updates.visitDate = updates.visitDate || todayISO();
+        return updates;
+      })
+    );
+    addLog(
+      id,
+      'status',
+      `Durum: ${STATUS_OPTIONS[newStatus]?.label || newStatus}`
+    );
+  };
+
+  // Quick add minimal form state
+  const [quick, setQuick] = useState({
+    companyName: '',
+    contactName: '',
+    city: '',
+  });
+  const quickAdd = () => {
+    if (!quick.companyName || !quick.contactName || !quick.city) return;
+    const id = Date.now() + Math.random();
+    const rec = {
+      ...blankForm,
+      ...quick,
+      id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      activityLog: [],
+    };
+    setCustomers((prev) => [rec, ...prev]);
+    setQuick({ companyName: '', contactName: '', city: '' });
+    setTimeout(() => addLog(id, 'create', 'Hızlı ekleme'), 0);
+  };
+
+  // Message due: connection_accepted + next day = today and not messaged yet
+  const messageDue = useMemo(
+    () =>
+      customers.filter((c) => {
+        if (c.status === 'connection_accepted' && c.connectionDate) {
+          const d = new Date(c.connectionDate);
+          const next = new Date(d);
+          next.setDate(next.getDate() + 1);
+          return (
+            next.toISOString().split('T')[0] === todayISO() && !c.messageDate
+          );
+        }
+        return false;
+      }),
+    [customers]
+  );
+
+  const visitsToday = useMemo(
+    () => customers.filter((c) => c.visitDate === todayISO()),
+    [customers]
+  );
+
+  const followupsDue = useMemo(() => {
+    // basit kural: message_sent ise 7 gün sonra takip öner
+    return customers
+      .filter((c) => c.status === 'message_sent' && c.messageDate)
+      .filter((c) => {
+        const d = new Date(c.messageDate);
+        const next = new Date(d);
+        next.setDate(next.getDate() + 7);
+        return next.toISOString().split('T')[0] === todayISO();
+      });
+  }, [customers]);
+
+  // Batch visit schedule by city (pending)
+  const pendingByCity = useMemo(() => {
+    const groups = {};
+    customers
+      .filter((c) => c.status === 'visit_pending')
+      .forEach((c) => {
+        groups[c.city] = groups[c.city] || [];
+        groups[c.city].push(c);
+      });
+    return Object.entries(groups);
+  }, [customers]);
+
+  const scheduleBatchVisit = (list, date) => {
+    const ids = list.map((c) => c.id);
+    setCustomers((prev) =>
+      prev.map((c) =>
+        ids.includes(c.id)
+          ? { ...c, status: 'visit_scheduled', visitDate: date }
+          : c
+      )
+    );
+    list.forEach((c) => addLog(c.id, 'status', `Toplu planlama: ${date}`));
+  };
+
+  // CSV export
+  const exportCSV = () => {
+    const blob = new Blob([toCSV(customers)], {
+      type: 'text/csv;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `customers_${todayISO()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // CSV import
+  const importCSV = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const rows = fromCSV(reader.result);
+        // basit merge: id çakışırsa yeni id ver
+        const existingIds = new Set(customers.map((c) => String(c.id)));
+        const sanitized = rows.map((r) => ({
+          ...blankForm,
+          ...r,
+          id: existingIds.has(String(r.id)) ? Date.now() + Math.random() : r.id,
+          activityLog: r.activityLog || [],
+        }));
+        setCustomers((prev) => [...prev, ...sanitized]);
+      } catch (e) {
+        alert('CSV içe aktarma hatası: ' + e.message);
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  // Notification permission & trigger
+  const notify = (title, body) => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted')
+      new Notification(title, { body });
+  };
+
+  const checkRemindersAndNotify = () => {
+    if (messageDue.length)
+      notify('Mesaj zamanı', `${messageDue.length} kişi için mesaj zamanı`);
+    if (visitsToday.length)
+      notify('Ziyaret bugün', `${visitsToday.length} ziyaret planlı`);
+    if (followupsDue.length)
+      notify('Takip zamanı', `${followupsDue.length} kişi için takip zamanı`);
+  };
+
+  // Upcoming simple calendar (next 30 days)
+  const upcoming = useMemo(() => {
+    const map = {};
+    const now = new Date();
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      const key = d.toISOString().split('T')[0];
+      map[key] = [];
+    }
+    customers
+      .filter((c) => c.visitDate)
+      .forEach((c) => {
+        if (map[c.visitDate]) map[c.visitDate].push(c);
+      });
+    return Object.entries(map);
+  }, [customers]);
+
+  // Helpers for tag entry
+  const [tagInput, setTagInput] = useState('');
+  const addTagToForm = () => {
+    const t = tagInput.trim();
+    if (!t) return;
+    if ((form.tags || []).includes(t)) return;
+    setForm({ ...form, tags: [...(form.tags || []), t] });
+    setTagInput('');
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+      <div className="max-w-7xl mx-auto p-4 md:p-6">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl md:text-3xl font-bold">
+              Hoşgeldiniz, Murat Kar!
+            </h1>
+            <button
+              onClick={() => setDark((d) => !d)}
+              className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-800"
+            >
+              {dark ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+            <button
+              onClick={() =>
+                setView((v) => (v === 'table' ? 'cards' : 'table'))
+              }
+              className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-800"
+            >
+              {view === 'table' ? (
+                <LayoutGrid size={18} />
+              ) : (
+                <TableIcon size={18} />
+              )}
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-200 dark:border-gray-700">
+              <Search size={16} />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Ara: firma, kişi, şehir, not, etiket"
+                className="bg-transparent outline-none w-56"
+              />
+            </div>
+            <button
+              onClick={() => setShowForm(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+            >
+              <Plus size={18} /> Yeni Müşteri
+            </button>
+            <button
+              onClick={exportCSV}
+              className="bg-gray-200 dark:bg-gray-800 px-3 py-2 rounded-lg flex items-center gap-2"
+            >
+              <Download size={16} /> CSV
+            </button>
+            <label className="bg-gray-200 dark:bg-gray-800 px-3 py-2 rounded-lg flex items-center gap-2 cursor-pointer">
+              <Upload size={16} /> CSV Yükle
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) importCSV(f);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            {'Notification' in window && (
+              <button
+                onClick={() => {
+                  Notification.requestPermission().then(() =>
+                    checkRemindersAndNotify()
+                  );
+                }}
+                className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-2 rounded-lg flex items-center gap-2"
+              >
+                <Bell size={16} /> Bildirim
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <div className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-200 dark:border-gray-700">
+            <Filter size={16} />
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="bg-transparent outline-none"
+            >
+              <option value="all">Tüm Durumlar</option>
+              {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
+                <option key={k} value={k}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-200 dark:border-gray-700">
+            <MapPin size={16} />
+            <select
+              value={cityFilter}
+              onChange={(e) => setCityFilter(e.target.value)}
+              className="bg-transparent outline-none"
+            >
+              <option value="">Tüm Şehirler</option>
+              {cities.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-200 dark:border-gray-700">
+            <Tag size={16} />
+            <select
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              className="bg-transparent outline-none"
+            >
+              <option value="">Tüm Etiketler</option>
+              {allTags.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="text-sm text-gray-600 dark:text-gray-300 ml-auto">
+            Toplam: {filtered.length} müşteri
+          </div>
+        </div>
+
+        {/* Quick Add */}
+        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <input
+              value={quick.companyName}
+              onChange={(e) =>
+                setQuick({ ...quick, companyName: e.target.value })
+              }
+              placeholder="Firma Adı *"
+              className="px-3 py-2 border rounded-lg bg-transparent"
+            />
+            <input
+              value={quick.contactName}
+              onChange={(e) =>
+                setQuick({ ...quick, contactName: e.target.value })
+              }
+              placeholder="Kişi *"
+              className="px-3 py-2 border rounded-lg bg-transparent"
+            />
+            <input
+              value={quick.city}
+              onChange={(e) => setQuick({ ...quick, city: e.target.value })}
+              placeholder="Şehir *"
+              className="px-3 py-2 border rounded-lg bg-transparent"
+            />
+            <button
+              onClick={quickAdd}
+              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 justify-center"
+            >
+              <CheckCircle2 size={18} /> Hızlı Ekle
+            </button>
+          </div>
+        </div>
+
+        {/* Reminder panels */}
+        {messageDue.length > 0 && (
+          <Panel
+            title={`Bugün Mesaj Gönderilecekler (${messageDue.length})`}
+            icon={<AlertCircle className="text-yellow-600" size={18} />}
+          >
+            {messageDue.map((c) => (
+              <Row key={c.id} left={`${c.companyName} – ${c.contactName}`}>
+                <button
+                  onClick={() => setStatus(c.id, 'message_sent')}
+                  className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded text-sm"
+                >
+                  Mesaj Gönderildi
+                </button>
+              </Row>
+            ))}
+          </Panel>
+        )}
+
+        {visitsToday.length > 0 && (
+          <Panel
+            title={`Bugünkü Ziyaretler (${visitsToday.length})`}
+            icon={<Calendar className="text-indigo-600" size={18} />}
+          >
+            {visitsToday.map((c) => (
+              <Row
+                key={c.id}
+                left={`${c.companyName} – ${c.contactName} (${c.city})`}
+              >
+                <span className="text-sm opacity-80">
+                  {new Date(c.visitDate).toLocaleDateString('tr-TR')}
+                </span>
+              </Row>
+            ))}
+          </Panel>
+        )}
+
+        {followupsDue.length > 0 && (
+          <Panel
+            title={`Takip Zamanı Gelenler (${followupsDue.length})`}
+            icon={<Clock className="text-amber-600" size={18} />}
+          >
+            {followupsDue.map((c) => (
+              <Row key={c.id} left={`${c.companyName} – ${c.contactName}`}>
+                <button
+                  onClick={() => addLog(c.id, 'followup', 'Takip edildi')}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded text-sm"
+                >
+                  Takip Ettim
+                </button>
+              </Row>
+            ))}
+          </Panel>
+        )}
+
+        {/* Pending batch scheduling */}
+        {pendingByCity.length > 0 && (
+          <Panel
+            title="Ziyaret Optimizasyonu Bekleyenler"
+            icon={<Clock className="text-amber-600" size={18} />}
+          >
+            {pendingByCity.map(([city, list]) => (
+              <div
+                key={city}
+                className="mb-3 p-3 rounded border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/20"
+              >
+                <div className="font-medium mb-2 text-amber-900 dark:text-amber-200">
+                  {city} – {list.length} firma beklemede
+                </div>
+                <div className="space-y-1 mb-2">
+                  {list.map((c) => (
+                    <Row
+                      key={c.id}
+                      left={`${c.companyName} – ${c.contactName}`}
+                    >
+                      <button
+                        onClick={() => setStatus(c.id, 'visit_scheduled')}
+                        className="bg-amber-600 hover:bg-amber-700 text-white px-2 py-1 rounded text-xs"
+                      >
+                        Tekil Planla
+                      </button>
+                    </Row>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    className="px-3 py-1 border rounded text-sm bg-transparent"
+                    min={todayISO()}
+                    onChange={(e) => {
+                      if (e.target.value)
+                        scheduleBatchVisit(list, e.target.value);
+                    }}
+                  />
+                  <span className="text-sm opacity-80">
+                    Tüm {city} firmalarını aynı güne planla
+                  </span>
+                </div>
+              </div>
+            ))}
+          </Panel>
+        )}
+
+        {/* Add/Edit Form */}
+        {showForm && (
+          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 mb-6">
+            <form
+              onSubmit={handleSubmit}
+              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+            >
+              <input
+                value={form.companyName}
+                onChange={(e) =>
+                  setForm({ ...form, companyName: e.target.value })
+                }
+                placeholder="Firma Adı *"
+                className="px-3 py-2 border rounded-lg bg-transparent"
+                required
+              />
+              <input
+                value={form.contactName}
+                onChange={(e) =>
+                  setForm({ ...form, contactName: e.target.value })
+                }
+                placeholder="İletişim Kişisi *"
+                className="px-3 py-2 border rounded-lg bg-transparent"
+                required
+              />
+              <input
+                value={form.city}
+                onChange={(e) => setForm({ ...form, city: e.target.value })}
+                placeholder="Şehir *"
+                className="px-3 py-2 border rounded-lg bg-transparent"
+                required
+              />
+              <input
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                placeholder="Telefon"
+                className="px-3 py-2 border rounded-lg bg-transparent"
+              />
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                placeholder="E-posta"
+                className="px-3 py-2 border rounded-lg bg-transparent"
+              />
+              <select
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value })}
+                className={`px-3 py-2 border rounded-lg bg-transparent`}
+              >
+                {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
+                  <option key={k} value={k}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <div className="flex flex-col">
+                <label className="text-sm mb-1">LinkedIn Bağlantı Tarihi</label>
+                <input
+                  type="date"
+                  value={form.connectionDate}
+                  onChange={(e) =>
+                    setForm({ ...form, connectionDate: e.target.value })
+                  }
+                  className="px-3 py-2 border rounded-lg bg-transparent"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label className="text-sm mb-1">Mesaj Gönderim Tarihi</label>
+                <input
+                  type="date"
+                  value={form.messageDate}
+                  onChange={(e) =>
+                    setForm({ ...form, messageDate: e.target.value })
+                  }
+                  className="px-3 py-2 border rounded-lg bg-transparent"
+                />
+              </div>
+              <div className="flex flex-col">
+                <label className="text-sm mb-1">Ziyaret Tarihi</label>
+                <input
+                  type="date"
+                  value={form.visitDate}
+                  onChange={(e) =>
+                    setForm({ ...form, visitDate: e.target.value })
+                  }
+                  className="px-3 py-2 border rounded-lg bg-transparent"
+                />
+              </div>
+              <div className="col-span-full">
+                <label className="text-sm mb-1">Etiketler</label>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    placeholder="etiket yaz ve ekle"
+                    className="px-3 py-2 border rounded-lg bg-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={addTagToForm}
+                    className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-700"
+                  >
+                    Ekle
+                  </button>
+                </div>
+                <div>
+                  {(form.tags || []).map((t) => (
+                    <TagChip
+                      key={t}
+                      label={t}
+                      onRemove={() =>
+                        setForm({
+                          ...form,
+                          tags: form.tags.filter((x) => x !== t),
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+              <textarea
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="Notlar (Markdown serbest)"
+                rows={3}
+                className="px-3 py-2 border rounded-lg bg-transparent col-span-full"
+              />
+              <div className="col-span-full flex gap-2">
+                <button
+                  type="submit"
+                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg"
+                >
+                  {editing ? 'Güncelle' : 'Ekle'}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg"
+                >
+                  İptal
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* List */}
+        {view === 'table' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full table-auto">
+              <thead className="bg-gray-100 dark:bg-gray-800">
+                <tr>
+                  <th className="px-4 py-3 text-left">Firma</th>
+                  <th className="px-4 py-3 text-left">Kişi</th>
+                  <th className="px-4 py-3 text-left">Şehir</th>
+                  <th className="px-4 py-3 text-left">Durum</th>
+                  <th className="px-4 py-3 text-left">İlerleme</th>
+                  <th className="px-4 py-3 text-left">Tarihler</th>
+                  <th className="px-4 py-3 text-left">İletişim</th>
+                  <th className="px-4 py-3 text-left">Etiketler</th>
+                  <th className="px-4 py-3 text-left">İşlemler</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => {
+                  const same = sameCity(c.city, c.id);
+                  return (
+                    <tr
+                      key={c.id}
+                      className="border-b dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{c.companyName}</div>
+                        {c.notes && (
+                          <div className="text-sm opacity-80 mt-1 line-clamp-2">
+                            {c.notes}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">{c.contactName}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <MapPin size={16} />
+                          {c.city}
+                          {same.length > 0 && (
+                            <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs px-2 py-1 rounded-full ml-2">
+                              +{same.length} firma
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={c.status}
+                          onChange={(e) => setStatus(c.id, e.target.value)}
+                          className={`px-2 py-1 rounded-full text-sm ${
+                            STATUS_OPTIONS[c.status]?.color || ''
+                          }`}
+                        >
+                          {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
+                            <option key={k} value={k}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 w-48">
+                        <ProgressBar value={progressOf(c)} />
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {c.connectionDate && (
+                          <div className="flex items-center gap-1 mb-1">
+                            <Clock size={14} /> Bağlantı:{' '}
+                            {new Date(c.connectionDate).toLocaleDateString(
+                              'tr-TR'
+                            )}
+                          </div>
+                        )}
+                        {c.messageDate && (
+                          <div className="flex items-center gap-1 mb-1">
+                            <Mail size={14} /> Mesaj:{' '}
+                            {new Date(c.messageDate).toLocaleDateString(
+                              'tr-TR'
+                            )}
+                          </div>
+                        )}
+                        {c.visitDate && (
+                          <div className="flex items-center gap-1">
+                            <Calendar size={14} /> Ziyaret:{' '}
+                            {new Date(c.visitDate).toLocaleDateString('tr-TR')}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          {c.phone && (
+                            <a
+                              href={`tel:${c.phone}`}
+                              className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline"
+                            >
+                              <Phone size={14} /> {c.phone}
+                            </a>
+                          )}
+                          {c.email && (
+                            <a
+                              href={`mailto:${c.email}`}
+                              className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline"
+                            >
+                              <Mail size={14} /> E-posta
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap max-w-[220px]">
+                          {(c.tags || []).map((t) => (
+                            <TagChip key={t} label={t} />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => startEdit(c)}
+                            className="text-blue-600 hover:bg-blue-100 dark:hover:bg-blue-900/30 p-1 rounded"
+                            title="Düzenle"
+                          >
+                            <Edit size={16} />
+                          </button>
+                          <button
+                            onClick={() => removeCustomer(c.id)}
+                            className="text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 p-1 rounded"
+                            title="Sil"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {filtered.length === 0 && (
+              <div className="text-center py-12 opacity-60">
+                Kayıt bulunamadı.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filtered.map((c) => (
+              <div
+                key={c.id}
+                className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div>
+                    <div className="font-semibold text-lg">{c.companyName}</div>
+                    <div className="text-sm opacity-80">
+                      {c.contactName} • {c.city}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => startEdit(c)}
+                    className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-700"
+                  >
+                    <Edit size={16} />
+                  </button>
+                </div>
+                <div
+                  className={`inline-block px-2 py-1 rounded-full text-xs mb-2 ${
+                    STATUS_OPTIONS[c.status]?.color || ''
+                  }`}
+                >
+                  {STATUS_OPTIONS[c.status]?.label || c.status}
+                </div>
+                <div className="mb-2">
+                  <ProgressBar value={progressOf(c)} />
+                </div>
+                <div className="text-sm space-y-1 mb-3">
+                  {c.connectionDate && (
+                    <div className="flex items-center gap-1">
+                      <Clock size={14} />{' '}
+                      {new Date(c.connectionDate).toLocaleDateString('tr-TR')}
+                    </div>
+                  )}
+                  {c.messageDate && (
+                    <div className="flex items-center gap-1">
+                      <Mail size={14} />{' '}
+                      {new Date(c.messageDate).toLocaleDateString('tr-TR')}
+                    </div>
+                  )}
+                  {c.visitDate && (
+                    <div className="flex items-center gap-1">
+                      <Calendar size={14} />{' '}
+                      {new Date(c.visitDate).toLocaleDateString('tr-TR')}
+                    </div>
+                  )}
+                </div>
+                {(c.tags || []).length > 0 && (
+                  <div className="mb-3 flex flex-wrap">
+                    {c.tags.map((t) => (
+                      <TagChip key={t} label={t} />
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <select
+                    value={c.status}
+                    onChange={(e) => setStatus(c.id, e.target.value)}
+                    className="flex-1 px-2 py-2 rounded border bg-transparent"
+                  >
+                    {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
+                      <option key={k} value={k}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                  {c.phone && (
+                    <a
+                      href={`tel:${c.phone}`}
+                      className="px-2 py-2 rounded border"
+                    >
+                      <Phone size={16} />
+                    </a>
+                  )}
+                  {c.email && (
+                    <a
+                      href={`mailto:${c.email}`}
+                      className="px-2 py-2 rounded border"
+                    >
+                      <Mail size={16} />
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+            {filtered.length === 0 && (
+              <div className="text-center py-12 opacity-60 col-span-full">
+                Kayıt bulunamadı.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Activity Timeline (accordion per customer) */}
+        <div className="mt-8">
+          <h3 className="text-lg font-semibold mb-3">Aktivite Geçmişi</h3>
+          <div className="space-y-3">
+            {customers.map((c) => (
+              <details
+                key={c.id}
+                className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3"
+              >
+                <summary className="cursor-pointer select-none font-medium">
+                  {c.companyName} – {c.contactName}
+                </summary>
+                <div className="mt-3 space-y-2">
+                  {(c.activityLog || []).length === 0 && (
+                    <div className="opacity-60 text-sm">Kayıt yok</div>
+                  )}
+                  {(c.activityLog || [])
+                    .slice()
+                    .reverse()
+                    .map((e, idx) => (
+                      <div
+                        key={idx}
+                        className="text-sm flex items-center gap-2"
+                      >
+                        <Clock size={14} />{' '}
+                        <span className="opacity-70">
+                          {new Date(e.date).toLocaleString('tr-TR')}
+                        </span>{' '}
+                        – <span className="font-medium">{e.type}</span> •{' '}
+                        {e.detail}
+                      </div>
+                    ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </div>
+
+        {/* Upcoming calendar list */}
+        <div className="mt-8">
+          <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+            <Calendar size={18} /> Yaklaşan 30 Gün
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {upcoming.map(([date, list]) => (
+              <div
+                key={date}
+                className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3"
+              >
+                <div className="font-medium mb-2">
+                  {new Date(date).toLocaleDateString('tr-TR', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
+                </div>
+                {list.length === 0 ? (
+                  <div className="text-sm opacity-50">Plan yok</div>
+                ) : (
+                  <ul className="text-sm space-y-1">
+                    {list.map((c) => (
+                      <li key={c.id}>
+                        • {c.companyName} – {c.contactName} ({c.city})
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <footer className="mt-10 opacity-60 text-sm flex items-center gap-2">
+          <LinkIcon size={14} /> Veriler localStorage'da saklanır. CSV ile yedek
+          almayı unutma.
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function Panel({ title, icon, children }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 mb-4">
+      <div className="flex items-center gap-2 mb-2">
+        {icon}
+        <h3 className="font-semibold">{title}</h3>
+      </div>
+      <div className="space-y-2">{children}</div>
+    </div>
+  );
+}
+
+function Row({ left, children }) {
+  return (
+    <div className="flex items-center justify-between gap-2 py-1">
+      <div>{left}</div>
+      <div className="flex items-center gap-2">{children}</div>
+    </div>
+  );
+}
