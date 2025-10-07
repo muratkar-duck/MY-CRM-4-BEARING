@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react';
 import {
   Plus,
   Calendar,
@@ -84,12 +85,41 @@ const STATUS_OPTIONS = {
     color:
       'bg-emerald-200 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-200',
   },
+} as const;
+
+type StatusKey = keyof typeof STATUS_OPTIONS;
+
+interface ActivityEntry {
+  date: string;
+  type: string;
+  detail: string;
+}
+
+type CustomerForm = {
+  companyName: string;
+  contactName: string;
+  city: string;
+  phone: string;
+  email: string;
+  status: StatusKey;
+  connectionDate: string;
+  messageDate: string;
+  visitDate: string;
+  notes: string;
+  tags: string[];
 };
+
+interface Customer extends CustomerForm {
+  id: number;
+  createdAt?: string;
+  updatedAt?: string;
+  activityLog?: ActivityEntry[];
+}
 
 const STORAGE_KEY = 'customer_tracker_pro_v1';
 const todayISO = () => new Date().toISOString().split('T')[0];
 
-const blankForm = {
+const createBlankForm = (): CustomerForm => ({
   companyName: '',
   contactName: '',
   city: '',
@@ -101,26 +131,94 @@ const blankForm = {
   visitDate: '',
   notes: '',
   tags: [],
+});
+
+const toFormState = (customer: Customer): CustomerForm => ({
+  companyName: customer.companyName ?? '',
+  contactName: customer.contactName ?? '',
+  city: customer.city ?? '',
+  phone: customer.phone ?? '',
+  email: customer.email ?? '',
+  status: customer.status ?? 'connection_sent',
+  connectionDate: customer.connectionDate ?? '',
+  messageDate: customer.messageDate ?? '',
+  visitDate: customer.visitDate ?? '',
+  notes: customer.notes ?? '',
+  tags: [...(customer.tags ?? [])],
+});
+
+const CSV_HEADERS = [
+  'id',
+  'companyName',
+  'contactName',
+  'city',
+  'phone',
+  'email',
+  'status',
+  'connectionDate',
+  'messageDate',
+  'visitDate',
+  'notes',
+  'tags',
+] as const;
+
+type CsvHeader = (typeof CSV_HEADERS)[number];
+
+const isStatus = (value: string): value is StatusKey =>
+  value in STATUS_OPTIONS;
+
+const isCsvHeader = (value: string): value is CsvHeader =>
+  (CSV_HEADERS as readonly string[]).includes(value);
+
+const parseCsvLine = (line: string): string[] => {
+  const row: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      row.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  row.push(cur);
+  return row;
 };
 
-function useLocalStorageState(key, initialValue) {
-  const [state, setState] = useState(() => {
+function useLocalStorageState<T>(
+  key: string,
+  initialValue: T
+): [T, Dispatch<SetStateAction<T>>] {
+  const [state, setState] = useState<T>(() => {
+    if (typeof window === 'undefined') return initialValue;
     try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : initialValue;
+      const raw = window.localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : initialValue;
     } catch {
       return initialValue;
     }
   });
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     try {
-      localStorage.setItem(key, JSON.stringify(state));
-    } catch {}
+      window.localStorage.setItem(key, JSON.stringify(state));
+    } catch {
+      /* ignore persistence errors */
+    }
   }, [key, state]);
   return [state, setState];
 }
 
-function csvEscape(value) {
+function csvEscape(value: unknown) {
   if (value == null) return '';
   const s = String(value);
   if (s.includes(',') || s.includes('\n') || s.includes('"')) {
@@ -129,69 +227,130 @@ function csvEscape(value) {
   return s;
 }
 
-function toCSV(rows) {
-  const headers = [
-    'id',
-    'companyName',
-    'contactName',
-    'city',
-    'phone',
-    'email',
-    'status',
-    'connectionDate',
-    'messageDate',
-    'visitDate',
-    'notes',
-    'tags',
-  ];
-  const lines = [headers.join(',')];
-  rows.forEach((r) => {
-    const vals = headers.map((h) =>
-      h === 'tags' ? (r.tags || []).join('|') : r[h] ?? ''
-    );
-    lines.push(vals.map(csvEscape).join(','));
+function toCSV(rows: Customer[]) {
+  const lines = [CSV_HEADERS.join(',')];
+  rows.forEach((row) => {
+    const values = CSV_HEADERS.map((header) => {
+      switch (header) {
+        case 'id':
+          return row.id ? String(row.id) : '';
+        case 'companyName':
+          return row.companyName ?? '';
+        case 'contactName':
+          return row.contactName ?? '';
+        case 'city':
+          return row.city ?? '';
+        case 'phone':
+          return row.phone ?? '';
+        case 'email':
+          return row.email ?? '';
+        case 'status':
+          return row.status ?? 'connection_sent';
+        case 'connectionDate':
+          return row.connectionDate ?? '';
+        case 'messageDate':
+          return row.messageDate ?? '';
+        case 'visitDate':
+          return row.visitDate ?? '';
+        case 'notes':
+          return row.notes ?? '';
+        case 'tags':
+          return (row.tags ?? []).join('|');
+        default:
+          return '';
+      }
+    });
+    lines.push(values.map(csvEscape).join(','));
   });
   return lines.join('\n');
 }
 
-function fromCSV(text) {
-  // Minimal CSV parser for this schema (expects no line breaks inside fields except quoted)
-  const lines = text.split(/\r?\n/).filter(Boolean);
+function fromCSV(text: string): Customer[] {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length < 2) return [];
-  const header = lines[0].split(',');
-  const out = [];
+  const headerCells = parseCsvLine(lines[0]);
+  const out: Customer[] = [];
   for (let i = 1; i < lines.length; i++) {
-    // simple split respecting quotes
-    const row = [];
-    let cur = '';
-    let inQ = false;
-    for (let j = 0; j < lines[i].length; j++) {
-      const ch = lines[i][j];
-      if (ch === '"') {
-        if (inQ && lines[i][j + 1] === '"') {
-          cur += '"';
-          j++;
-        } else inQ = !inQ;
-      } else if (ch === ',' && !inQ) {
-        row.push(cur);
-        cur = '';
-      } else {
-        cur += ch;
+    const rowValues = parseCsvLine(lines[i]);
+    const partial: Partial<Customer> = {};
+    headerCells.forEach((headerCell, idx) => {
+      if (!isCsvHeader(headerCell)) return;
+      const value = rowValues[idx] ?? '';
+      switch (headerCell) {
+        case 'id': {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) partial.id = parsed;
+          break;
+        }
+        case 'companyName':
+          partial.companyName = value;
+          break;
+        case 'contactName':
+          partial.contactName = value;
+          break;
+        case 'city':
+          partial.city = value;
+          break;
+        case 'phone':
+          partial.phone = value;
+          break;
+        case 'email':
+          partial.email = value;
+          break;
+        case 'status':
+          if (isStatus(value)) partial.status = value;
+          break;
+        case 'connectionDate':
+          partial.connectionDate = value;
+          break;
+        case 'messageDate':
+          partial.messageDate = value;
+          break;
+        case 'visitDate':
+          partial.visitDate = value;
+          break;
+        case 'notes':
+          partial.notes = value;
+          break;
+        case 'tags':
+          partial.tags = value
+            ? value.split('|').map((tag) => tag.trim()).filter(Boolean)
+            : [];
+          break;
+        default:
+          break;
       }
-    }
-    row.push(cur);
-    const obj = {};
-    header.forEach((h, idx) => {
-      obj[h] = row[idx] ?? '';
     });
-    if (obj.tags) obj.tags = obj.tags.split('|').filter(Boolean);
-    if (!obj.id) obj.id = Date.now() + Math.random();
-    out.push(obj);
+    const {
+      id: parsedId,
+      tags: parsedTags,
+      status: parsedStatus,
+      activityLog,
+      createdAt,
+      updatedAt,
+      ...rest
+    } = partial;
+    const id =
+      typeof parsedId === 'number' && Number.isFinite(parsedId)
+        ? parsedId
+        : Date.now() + Math.random();
+    const now = new Date().toISOString();
+    const customer: Customer = {
+      ...createBlankForm(),
+      ...rest,
+      id,
+      tags: parsedTags ?? [],
+      status: parsedStatus ?? 'connection_sent',
+      activityLog: activityLog ?? [],
+      createdAt: createdAt ?? now,
+      updatedAt: updatedAt ?? now,
+    };
+    out.push(customer);
   }
   return out;
 }
 
-function ProgressBar({ value }) {
+function ProgressBar({ value }: { value: number }) {
   return (
     <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
       <div
@@ -202,7 +361,13 @@ function ProgressBar({ value }) {
   );
 }
 
-function TagChip({ label, onRemove }) {
+function TagChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: () => void;
+}) {
   return (
     <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 mr-1 mb-1">
       <Tag size={12} /> {label}
@@ -216,19 +381,26 @@ function TagChip({ label, onRemove }) {
 }
 
 export default function CustomerTrackerPro() {
-  const [customers, setCustomers] = useLocalStorageState(STORAGE_KEY, []);
+  const [customers, setCustomers] = useLocalStorageState<Customer[]>(
+    STORAGE_KEY,
+    []
+  );
   const [showForm, setShowForm] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(blankForm);
+  const [editing, setEditing] = useState<Customer | null>(null);
+  const [form, setForm] = useState<CustomerForm>(() => createBlankForm());
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<StatusKey | 'all'>('all');
   const [cityFilter, setCityFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
-  const [dark, setDark] = useLocalStorageState('ctp_dark', false);
-  const [view, setView] = useLocalStorageState('ctp_view', 'table'); // table | cards
-  const fileInputRef = useRef(null);
+  const [dark, setDark] = useLocalStorageState<boolean>('ctp_dark', false);
+  const [view, setView] = useLocalStorageState<'table' | 'cards'>(
+    'ctp_view',
+    'table'
+  );
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
     const root = document.documentElement;
     if (dark) root.classList.add('dark');
     else root.classList.remove('dark');
@@ -239,7 +411,10 @@ export default function CustomerTrackerPro() {
     [customers]
   );
   const allTags = useMemo(
-    () => [...new Set(customers.flatMap((c) => c.tags || []))].sort(),
+    () =>
+      [...new Set(customers.flatMap((c) => c.tags ?? []))].sort((a, b) =>
+        a.localeCompare(b)
+      ),
     [customers]
   );
 
@@ -254,65 +429,74 @@ export default function CustomerTrackerPro() {
             c.contactName,
             c.city,
             c.notes,
-            (c.tags || []).join(' '),
+            (c.tags ?? []).join(' '),
           ]
             .filter(Boolean)
             .some((v) => String(v).toLowerCase().includes(q));
         const st = statusFilter === 'all' || c.status === statusFilter;
         const ct = !cityFilter || c.city === cityFilter;
-        const tg = !tagFilter || (c.tags || []).includes(tagFilter);
+        const tg = !tagFilter || (c.tags ?? []).includes(tagFilter);
         return inText && st && ct && tg;
       }),
     [customers, query, statusFilter, cityFilter, tagFilter]
   );
 
-  const sameCity = (city, excludeId) =>
-    customers.filter(
+  const sameCity = (city: string, excludeId: number) => {
+    const relevantStatuses: StatusKey[] = [
+      'visit_requested',
+      'visit_scheduled',
+      'visit_pending',
+    ];
+    return customers.filter(
       (c) =>
         c.city === city &&
         c.id !== excludeId &&
-        ['visit_requested', 'visit_scheduled', 'visit_pending'].includes(
-          c.status
-        )
+        relevantStatuses.includes(c.status)
     );
+  };
 
   // Pipeline progress ratio
-  function progressOf(c) {
-    const order = [
-      'connection_sent',
-      'connection_accepted',
-      'message_sent',
-      'replied',
-      'visit_requested',
-      'visit_pending',
-      'visit_scheduled',
-      'email_redirect',
-      'completed',
-    ];
-    const idx = order.indexOf(c.status);
-    return idx < 0 ? 0 : idx / (order.length - 1);
-  }
+  const progressOrder: StatusKey[] = [
+    'connection_sent',
+    'connection_accepted',
+    'message_sent',
+    'replied',
+    'visit_requested',
+    'visit_pending',
+    'visit_scheduled',
+    'email_redirect',
+    'completed',
+  ];
+
+  const progressOf = (customer: Customer) => {
+    const idx = progressOrder.indexOf(customer.status);
+    return idx < 0 ? 0 : idx / (progressOrder.length - 1);
+  };
 
   // Activity log helpers
-  const addLog = (custId, type, detail) => {
+  const addLog = (custId: number, type: string, detail: string) => {
     setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.id !== custId) return c;
-        const entry = { date: new Date().toISOString(), type, detail };
-        const activityLog = [...(c.activityLog || []), entry];
-        return { ...c, activityLog, updatedAt: new Date().toISOString() };
+      prev.map((customer) => {
+        if (customer.id !== custId) return customer;
+        const entry: ActivityEntry = {
+          date: new Date().toISOString(),
+          type,
+          detail,
+        };
+        const activityLog = [...(customer.activityLog ?? []), entry];
+        return { ...customer, activityLog, updatedAt: entry.date };
       })
     );
   };
 
   // Form handlers
   const resetForm = () => {
-    setForm(blankForm);
+    setForm(createBlankForm());
     setEditing(null);
     setShowForm(false);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e?.preventDefault();
     if (!form.companyName || !form.contactName || !form.city) {
       alert('Firma adı, iletişim kişisi ve şehir zorunlu.');
@@ -320,24 +504,26 @@ export default function CustomerTrackerPro() {
     }
     if (editing) {
       setCustomers((prev) =>
-        prev.map((c) =>
-          c.id === editing.id
+        prev.map((customer) =>
+          customer.id === editing.id
             ? {
-                ...c,
+                ...customer,
                 ...form,
                 id: editing.id,
+                updatedAt: new Date().toISOString(),
               }
-            : c
+            : customer
         )
       );
       addLog(editing.id, 'update', 'Kayıt güncellendi');
     } else {
       const id = Date.now() + Math.random();
-      const newRec = {
+      const now = new Date().toISOString();
+      const newRec: Customer = {
         ...form,
         id,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
         activityLog: [],
       };
       setCustomers((prev) => [...prev, newRec]);
@@ -347,29 +533,36 @@ export default function CustomerTrackerPro() {
     resetForm();
   };
 
-  const startEdit = (c) => {
-    setForm({ ...c, tags: c.tags || [] });
-    setEditing(c);
+  const startEdit = (customer: Customer) => {
+    setForm(toFormState(customer));
+    setEditing(customer);
     setShowForm(true);
   };
 
-  const removeCustomer = (id) => {
+  const removeCustomer = (id: number) => {
     if (confirm('Bu müşteriyi silmek istediğinizden emin misiniz?')) {
-      setCustomers((prev) => prev.filter((c) => c.id !== id));
+      setCustomers((prev) => prev.filter((customer) => customer.id !== id));
     }
   };
 
-  const setStatus = (id, newStatus) => {
+  const setStatus = (id: number, newStatus: StatusKey) => {
     setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.id !== id) return c;
-        const updates = { ...c, status: newStatus };
-        if (newStatus === 'message_sent' && !c.messageDate)
+      prev.map((customer) => {
+        if (customer.id !== id) return customer;
+        const updates: Customer = {
+          ...customer,
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        };
+        if (newStatus === 'message_sent' && !customer.messageDate) {
           updates.messageDate = todayISO();
-        if (newStatus === 'connection_accepted' && !c.connectionDate)
-          updates.connectionDate = updates.connectionDate || todayISO();
-        if (newStatus === 'visit_scheduled' && !c.visitDate)
-          updates.visitDate = updates.visitDate || todayISO();
+        }
+        if (newStatus === 'connection_accepted' && !customer.connectionDate) {
+          updates.connectionDate = customer.connectionDate || todayISO();
+        }
+        if (newStatus === 'visit_scheduled' && !customer.visitDate) {
+          updates.visitDate = customer.visitDate || todayISO();
+        }
         return updates;
       })
     );
@@ -381,7 +574,10 @@ export default function CustomerTrackerPro() {
   };
 
   // Quick add minimal form state
-  const [quick, setQuick] = useState({
+  const [quick, setQuick] = useState<Pick<
+    CustomerForm,
+    'companyName' | 'contactName' | 'city'
+  >>({
     companyName: '',
     contactName: '',
     city: '',
@@ -389,12 +585,13 @@ export default function CustomerTrackerPro() {
   const quickAdd = () => {
     if (!quick.companyName || !quick.contactName || !quick.city) return;
     const id = Date.now() + Math.random();
-    const rec = {
-      ...blankForm,
+    const now = new Date().toISOString();
+    const rec: Customer = {
+      ...createBlankForm(),
       ...quick,
       id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
       activityLog: [],
     };
     setCustomers((prev) => [rec, ...prev]);
@@ -437,27 +634,37 @@ export default function CustomerTrackerPro() {
   }, [customers]);
 
   // Batch visit schedule by city (pending)
-  const pendingByCity = useMemo(() => {
-    const groups = {};
+  const pendingByCity = useMemo<Array<[string, Customer[]]>>(() => {
+    const groups: Record<string, Customer[]> = {};
     customers
       .filter((c) => c.status === 'visit_pending')
       .forEach((c) => {
-        groups[c.city] = groups[c.city] || [];
-        groups[c.city].push(c);
+        const key = c.city || 'Bilinmeyen';
+        groups[key] = groups[key] ?? [];
+        groups[key].push(c);
       });
     return Object.entries(groups);
   }, [customers]);
 
-  const scheduleBatchVisit = (list, date) => {
-    const ids = list.map((c) => c.id);
+  const scheduleBatchVisit = (list: Customer[], date: string) => {
+    if (!date) return;
+    const ids = new Set(list.map((c) => c.id));
+    const timestamp = new Date().toISOString();
     setCustomers((prev) =>
-      prev.map((c) =>
-        ids.includes(c.id)
-          ? { ...c, status: 'visit_scheduled', visitDate: date }
-          : c
+      prev.map((customer) =>
+        ids.has(customer.id)
+          ? {
+              ...customer,
+              status: 'visit_scheduled',
+              visitDate: date,
+              updatedAt: timestamp,
+            }
+          : customer
       )
     );
-    list.forEach((c) => addLog(c.id, 'status', `Toplu planlama: ${date}`));
+    list.forEach((customer) =>
+      addLog(customer.id, 'status', `Toplu planlama: ${date}`)
+    );
   };
 
   // CSV export
@@ -474,32 +681,46 @@ export default function CustomerTrackerPro() {
   };
 
   // CSV import
-  const importCSV = (file) => {
+  const importCSV = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        alert('CSV içe aktarma hatası: Geçersiz dosya içeriği');
+        return;
+      }
       try {
-        const rows = fromCSV(reader.result);
+        const rows = fromCSV(result);
         // basit merge: id çakışırsa yeni id ver
         const existingIds = new Set(customers.map((c) => String(c.id)));
-        const sanitized = rows.map((r) => ({
-          ...blankForm,
-          ...r,
-          id: existingIds.has(String(r.id)) ? Date.now() + Math.random() : r.id,
-          activityLog: r.activityLog || [],
-        }));
+        const sanitized: Customer[] = rows.map((row) => {
+          const id = existingIds.has(String(row.id))
+            ? Date.now() + Math.random()
+            : row.id;
+          return {
+            ...row,
+            id,
+            activityLog: row.activityLog ?? [],
+          };
+        });
         setCustomers((prev) => [...prev, ...sanitized]);
-      } catch (e) {
-        alert('CSV içe aktarma hatası: ' + e.message);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        alert('CSV içe aktarma hatası: ' + message);
       }
+    };
+    reader.onerror = () => {
+      alert('CSV dosyası okunamadı.');
     };
     reader.readAsText(file, 'utf-8');
   };
 
   // Notification permission & trigger
-  const notify = (title, body) => {
-    if (!('Notification' in window)) return;
-    if (Notification.permission === 'granted')
-      new Notification(title, { body });
+  const notify = (title: string, body: string) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (window.Notification.permission === 'granted')
+      new window.Notification(title, { body });
   };
 
   const checkRemindersAndNotify = () => {
@@ -512,8 +733,8 @@ export default function CustomerTrackerPro() {
   };
 
   // Upcoming simple calendar (next 30 days)
-  const upcoming = useMemo(() => {
-    const map = {};
+  const upcoming = useMemo<Array<[string, Customer[]]>>(() => {
+    const map: Record<string, Customer[]> = {};
     const now = new Date();
     for (let i = 0; i < 30; i++) {
       const d = new Date(now);
@@ -534,8 +755,8 @@ export default function CustomerTrackerPro() {
   const addTagToForm = () => {
     const t = tagInput.trim();
     if (!t) return;
-    if ((form.tags || []).includes(t)) return;
-    setForm({ ...form, tags: [...(form.tags || []), t] });
+    if (form.tags.includes(t)) return;
+    setForm((prev) => ({ ...prev, tags: [...prev.tags, t] }));
     setTagInput('');
   };
 
@@ -603,7 +824,7 @@ export default function CustomerTrackerPro() {
                 }}
               />
             </label>
-            {'Notification' in window && (
+            {typeof window !== 'undefined' && 'Notification' in window && (
               <button
                 onClick={() => {
                   Notification.requestPermission().then(() =>
@@ -624,7 +845,9 @@ export default function CustomerTrackerPro() {
             <Filter size={16} />
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) =>
+                setStatusFilter(e.target.value as StatusKey | 'all')
+              }
               className="bg-transparent outline-none"
             >
               <option value="all">Tüm Durumlar</option>
@@ -676,7 +899,7 @@ export default function CustomerTrackerPro() {
             <input
               value={quick.companyName}
               onChange={(e) =>
-                setQuick({ ...quick, companyName: e.target.value })
+                setQuick((prev) => ({ ...prev, companyName: e.target.value }))
               }
               placeholder="Firma Adı *"
               className="px-3 py-2 border rounded-lg bg-transparent"
@@ -684,14 +907,16 @@ export default function CustomerTrackerPro() {
             <input
               value={quick.contactName}
               onChange={(e) =>
-                setQuick({ ...quick, contactName: e.target.value })
+                setQuick((prev) => ({ ...prev, contactName: e.target.value }))
               }
               placeholder="Kişi *"
               className="px-3 py-2 border rounded-lg bg-transparent"
             />
             <input
               value={quick.city}
-              onChange={(e) => setQuick({ ...quick, city: e.target.value })}
+              onChange={(e) =>
+                setQuick((prev) => ({ ...prev, city: e.target.value }))
+              }
               placeholder="Şehir *"
               className="px-3 py-2 border rounded-lg bg-transparent"
             />
@@ -854,7 +1079,12 @@ export default function CustomerTrackerPro() {
               />
               <select
                 value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value })}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    status: e.target.value as StatusKey,
+                  }))
+                }
                 className={`px-3 py-2 border rounded-lg bg-transparent`}
               >
                 {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
@@ -914,15 +1144,15 @@ export default function CustomerTrackerPro() {
                   </button>
                 </div>
                 <div>
-                  {(form.tags || []).map((t) => (
+                  {form.tags.map((t) => (
                     <TagChip
                       key={t}
                       label={t}
                       onRemove={() =>
-                        setForm({
-                          ...form,
-                          tags: form.tags.filter((x) => x !== t),
-                        })
+                        setForm((prev) => ({
+                          ...prev,
+                          tags: prev.tags.filter((x) => x !== t),
+                        }))
                       }
                     />
                   ))}
@@ -1002,7 +1232,9 @@ export default function CustomerTrackerPro() {
                       <td className="px-4 py-3">
                         <select
                           value={c.status}
-                          onChange={(e) => setStatus(c.id, e.target.value)}
+                          onChange={(e) =>
+                            setStatus(c.id, e.target.value as StatusKey)
+                          }
                           className={`px-2 py-1 rounded-full text-sm ${
                             STATUS_OPTIONS[c.status]?.color || ''
                           }`}
@@ -1063,7 +1295,7 @@ export default function CustomerTrackerPro() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap max-w-[220px]">
-                          {(c.tags || []).map((t) => (
+                          {(c.tags ?? []).map((t) => (
                             <TagChip key={t} label={t} />
                           ))}
                         </div>
@@ -1148,9 +1380,9 @@ export default function CustomerTrackerPro() {
                     </div>
                   )}
                 </div>
-                {(c.tags || []).length > 0 && (
+                {(c.tags ?? []).length > 0 && (
                   <div className="mb-3 flex flex-wrap">
-                    {c.tags.map((t) => (
+                    {(c.tags ?? []).map((t) => (
                       <TagChip key={t} label={t} />
                     ))}
                   </div>
@@ -1158,7 +1390,9 @@ export default function CustomerTrackerPro() {
                 <div className="flex items-center gap-2">
                   <select
                     value={c.status}
-                    onChange={(e) => setStatus(c.id, e.target.value)}
+                    onChange={(e) =>
+                      setStatus(c.id, e.target.value as StatusKey)
+                    }
                     className="flex-1 px-2 py-2 rounded border bg-transparent"
                   >
                     {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
@@ -1207,10 +1441,10 @@ export default function CustomerTrackerPro() {
                   {c.companyName} – {c.contactName}
                 </summary>
                 <div className="mt-3 space-y-2">
-                  {(c.activityLog || []).length === 0 && (
+                  {(c.activityLog ?? []).length === 0 && (
                     <div className="opacity-60 text-sm">Kayıt yok</div>
                   )}
-                  {(c.activityLog || [])
+                  {(c.activityLog ?? [])
                     .slice()
                     .reverse()
                     .map((e, idx) => (
@@ -1276,7 +1510,15 @@ export default function CustomerTrackerPro() {
   );
 }
 
-function Panel({ title, icon, children }) {
+function Panel({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 mb-4">
       <div className="flex items-center gap-2 mb-2">
@@ -1288,7 +1530,13 @@ function Panel({ title, icon, children }) {
   );
 }
 
-function Row({ left, children }) {
+function Row({
+  left,
+  children,
+}: {
+  left: ReactNode;
+  children?: ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-2 py-1">
       <div>{left}</div>
