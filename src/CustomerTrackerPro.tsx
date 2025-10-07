@@ -412,13 +412,16 @@ export default function CustomerTrackerPro() {
     () => [...new Set(customers.map((c) => c.city).filter(Boolean))].sort(),
     [customers]
   );
-  const allTags = useMemo(
-    () =>
-      [...new Set(customers.flatMap((c) => c.tags ?? []))].sort((a, b) =>
-        a.localeCompare(b)
-      ),
-    [customers]
-  );
+  const allTags = useMemo(() => {
+    const unique = new Set<string>();
+    customers.forEach((customer) => {
+      customer.tags?.forEach((tag) => {
+        const trimmed = tag.trim();
+        if (trimmed) unique.add(trimmed);
+      });
+    });
+    return Array.from(unique).sort((a, b) => a.localeCompare(b, 'tr'));
+  }, [customers]);
 
   const filtered = useMemo(
     () =>
@@ -781,13 +784,21 @@ export default function CustomerTrackerPro() {
 
   // Helpers for tag entry
   const [tagInput, setTagInput] = useState('');
-  const addTagToForm = () => {
-    const t = tagInput.trim();
+  const addTagToForm = (tag?: string) => {
+    const t = (tag ?? tagInput).trim();
     if (!t) return;
-    if (form.tags.includes(t)) return;
-    setForm((prev) => ({ ...prev, tags: [...prev.tags, t] }));
-    setTagInput('');
+    setForm((prev) => {
+      if (prev.tags.includes(t)) return prev;
+      return { ...prev, tags: [...prev.tags, t] };
+    });
+    if (tag === undefined) {
+      setTagInput('');
+    }
   };
+  const suggestedTags = useMemo(
+    () => allTags.filter((tag) => !form.tags.includes(tag)),
+    [allTags, form.tags]
+  );
 
   const quickReady = useMemo(
     () =>
@@ -1226,7 +1237,7 @@ export default function CustomerTrackerPro() {
                   />
                   <button
                     type="button"
-                    onClick={addTagToForm}
+                    onClick={() => addTagToForm()}
                     className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-700"
                   >
                     Ekle
@@ -1246,6 +1257,27 @@ export default function CustomerTrackerPro() {
                     />
                   ))}
                 </div>
+                {suggestedTags.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                      Önceden kullanılan etiketler
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {suggestedTags.map((tag) => (
+                        <button
+                          type="button"
+                          key={tag}
+                          onClick={() => addTagToForm(tag)}
+                          className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border border-transparent bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition"
+                        >
+                          <Tag size={12} />
+                          {tag}
+                          <Plus size={12} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <textarea
                 value={form.notes}
