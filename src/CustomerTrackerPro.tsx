@@ -481,6 +481,32 @@ export default function CustomerTrackerPro() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickFeedback, setQuickFeedback] = useState<string | null>(null);
+  const hasNormalizedStorage = useRef(false);
+
+  useEffect(() => {
+    if (hasNormalizedStorage.current) return;
+    hasNormalizedStorage.current = true;
+    setCustomers((prev) => {
+      let changed = false;
+      const upgraded = prev.map((customer) => {
+        const resolvedPriority = resolvePriority(customer.priority);
+        const activityLog = customer.activityLog ?? [];
+        if (
+          resolvedPriority !== customer.priority ||
+          customer.activityLog == null
+        ) {
+          changed = true;
+          return {
+            ...customer,
+            priority: resolvedPriority,
+            activityLog,
+          };
+        }
+        return customer;
+      });
+      return changed ? upgraded : prev;
+    });
+  }, [setCustomers]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
