@@ -208,9 +208,6 @@ const isCsvHeader = (value: string): value is CsvHeader =>
 const isPriority = (value: string): value is PriorityLevel =>
   value in PRIORITY_OPTIONS;
 
-const resolvePriority = (value: unknown): PriorityLevel =>
-  typeof value === 'string' && isPriority(value) ? value : 'medium';
-
 const parseCsvLine = (line: string): string[] => {
   const row: string[] = [];
   let cur = '';
@@ -428,9 +425,8 @@ function TagChip({
   );
 }
 
-function PriorityBadge({ level }: { level?: PriorityLevel }) {
-  const resolvedLevel = resolvePriority(level);
-  const option = PRIORITY_OPTIONS[resolvedLevel];
+function PriorityBadge({ level }: { level: PriorityLevel }) {
+  const option = PRIORITY_OPTIONS[level];
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border ${option.color}`}
@@ -1701,7 +1697,7 @@ export default function CustomerTrackerPro() {
                       </td>
                       <td className="px-4 py-3">
                         <select
-                          value={resolvePriority(c.priority)}
+                          value={c.priority}
                           onChange={(e) =>
                             setPriorityLevel(
                               c.id,
@@ -1877,17 +1873,17 @@ export default function CustomerTrackerPro() {
                       </option>
                     ))}
                   </select>
-                    <select
-                      value={resolvePriority(c.priority)}
-                      onChange={(e) =>
-                        setPriorityLevel(
-                          c.id,
-                          e.target.value as PriorityLevel
-                        )
-                      }
-                      className="px-2 py-2 rounded border bg-transparent"
-                      title="Öncelik"
-                    >
+                  <select
+                    value={c.priority}
+                    onChange={(e) =>
+                      setPriorityLevel(
+                        c.id,
+                        e.target.value as PriorityLevel
+                      )
+                    }
+                    className="px-2 py-2 rounded border bg-transparent"
+                    title="Öncelik"
+                  >
                     {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
                       <option key={key} value={key}>
                         {option.label}
