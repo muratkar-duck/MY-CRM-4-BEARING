@@ -90,18 +90,6 @@ const STATUS_OPTIONS = {
 
 type StatusKey = keyof typeof STATUS_OPTIONS;
 
-const PROGRESS_ORDER: StatusKey[] = [
-  'connection_sent',
-  'connection_accepted',
-  'message_sent',
-  'replied',
-  'visit_requested',
-  'visit_pending',
-  'visit_scheduled',
-  'email_redirect',
-  'completed',
-];
-
 const PRIORITY_OPTIONS = {
   high: {
     label: 'Acil',
@@ -219,9 +207,6 @@ const isCsvHeader = (value: string): value is CsvHeader =>
 
 const isPriority = (value: string): value is PriorityLevel =>
   value in PRIORITY_OPTIONS;
-
-const resolvePriority = (value: unknown): PriorityLevel =>
-  typeof value === 'string' && isPriority(value) ? value : 'medium';
 
 const parseCsvLine = (line: string): string[] => {
   const row: string[] = [];
@@ -440,9 +425,8 @@ function TagChip({
   );
 }
 
-function PriorityBadge({ level }: { level?: PriorityLevel }) {
-  const resolvedLevel = resolvePriority(level);
-  const option = PRIORITY_OPTIONS[resolvedLevel];
+function PriorityBadge({ level }: { level: PriorityLevel }) {
+  const option = PRIORITY_OPTIONS[level];
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border ${option.color}`}
@@ -574,12 +558,9 @@ export default function CustomerTrackerPro() {
     const total = customers.length;
     const completed = customers.filter((c) => c.status === 'completed').length;
     const active = total - completed;
-      const repliedIndex = PROGRESS_ORDER.indexOf('replied');
-      const responded = repliedIndex === -1
-        ? 0
-        : customers.filter(
-            (c) => PROGRESS_ORDER.indexOf(c.status) >= repliedIndex
-          ).length;
+    const responded = customers.filter(
+      (c) => progressOrder.indexOf(c.status) >= progressOrder.indexOf('replied')
+    ).length;
     const responseRate = total ? Math.round((responded / total) * 100) : 0;
     const conversionRate = total ? Math.round((completed / total) * 100) : 0;
     const highPriorityOpen = customers.filter(
@@ -670,9 +651,21 @@ export default function CustomerTrackerPro() {
   };
 
   // Pipeline progress ratio
+  const progressOrder: StatusKey[] = [
+    'connection_sent',
+    'connection_accepted',
+    'message_sent',
+    'replied',
+    'visit_requested',
+    'visit_pending',
+    'visit_scheduled',
+    'email_redirect',
+    'completed',
+  ];
+
   const progressOf = (customer: Customer) => {
-    const idx = PROGRESS_ORDER.indexOf(customer.status);
-    return idx < 0 ? 0 : idx / (PROGRESS_ORDER.length - 1);
+    const idx = progressOrder.indexOf(customer.status);
+    return idx < 0 ? 0 : idx / (progressOrder.length - 1);
   };
 
   // Activity log helpers
@@ -1704,7 +1697,7 @@ export default function CustomerTrackerPro() {
                       </td>
                       <td className="px-4 py-3">
                         <select
-                          value={resolvePriority(c.priority)}
+                          value={c.priority}
                           onChange={(e) =>
                             setPriorityLevel(
                               c.id,
@@ -1837,6 +1830,9 @@ export default function CustomerTrackerPro() {
                   <PriorityBadge level={c.priority} />
                 </div>
                 <div className="mb-2">
+                  <PriorityBadge level={c.priority} />
+                </div>
+                <div className="mb-2">
                   <ProgressBar value={progressOf(c)} />
                 </div>
                 <div className="text-sm space-y-1 mb-3">
@@ -1880,17 +1876,17 @@ export default function CustomerTrackerPro() {
                       </option>
                     ))}
                   </select>
-                    <select
-                      value={resolvePriority(c.priority)}
-                      onChange={(e) =>
-                        setPriorityLevel(
-                          c.id,
-                          e.target.value as PriorityLevel
-                        )
-                      }
-                      className="px-2 py-2 rounded border bg-transparent"
-                      title="Öncelik"
-                    >
+                  <select
+                    value={c.priority}
+                    onChange={(e) =>
+                      setPriorityLevel(
+                        c.id,
+                        e.target.value as PriorityLevel
+                      )
+                    }
+                    className="px-2 py-2 rounded border bg-transparent"
+                    title="Öncelik"
+                  >
                     {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
                       <option key={key} value={key}>
                         {option.label}
