@@ -23,6 +23,7 @@ import {
   Filter,
   LayoutGrid,
   Table as TableIcon,
+  Flame,
 } from 'lucide-react';
 
 /**
@@ -89,6 +90,41 @@ const STATUS_OPTIONS = {
 
 type StatusKey = keyof typeof STATUS_OPTIONS;
 
+const PROGRESS_ORDER: StatusKey[] = [
+  'connection_sent',
+  'connection_accepted',
+  'message_sent',
+  'replied',
+  'visit_requested',
+  'visit_pending',
+  'visit_scheduled',
+  'email_redirect',
+  'completed',
+];
+
+const PRIORITY_OPTIONS = {
+  high: {
+    label: 'Acil',
+    color:
+      'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200 border-red-200 dark:border-red-700',
+    description: 'Öncelikli takip gerekli',
+  },
+  medium: {
+    label: 'Normal',
+    color:
+      'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 border-amber-200 dark:border-amber-700',
+    description: 'Planlanan takvime göre ilerliyor',
+  },
+  low: {
+    label: 'Düşük',
+    color:
+      'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200 border-emerald-200 dark:border-emerald-700',
+    description: 'Bekleme modunda veya tamamlandı',
+  },
+} as const;
+
+type PriorityLevel = keyof typeof PRIORITY_OPTIONS;
+
 interface ActivityEntry {
   date: string;
   type: string;
@@ -102,6 +138,7 @@ type CustomerForm = {
   phone: string;
   email: string;
   status: StatusKey;
+  priority: PriorityLevel;
   connectionDate: string;
   messageDate: string;
   visitDate: string;
@@ -118,6 +155,13 @@ interface Customer extends CustomerForm {
 
 const STORAGE_KEY = 'customer_tracker_pro_v1';
 const todayISO = () => new Date().toISOString().split('T')[0];
+const daysSince = (iso?: string | null) => {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const diffMs = Date.now() - date.getTime();
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+};
 
 const createBlankForm = (): CustomerForm => ({
   companyName: '',
@@ -126,6 +170,7 @@ const createBlankForm = (): CustomerForm => ({
   phone: '',
   email: '',
   status: 'connection_sent',
+  priority: 'medium',
   connectionDate: '',
   messageDate: '',
   visitDate: '',
@@ -140,6 +185,7 @@ const toFormState = (customer: Customer): CustomerForm => ({
   phone: customer.phone ?? '',
   email: customer.email ?? '',
   status: customer.status ?? 'connection_sent',
+  priority: customer.priority ?? 'medium',
   connectionDate: customer.connectionDate ?? '',
   messageDate: customer.messageDate ?? '',
   visitDate: customer.visitDate ?? '',
@@ -155,6 +201,7 @@ const CSV_HEADERS = [
   'phone',
   'email',
   'status',
+  'priority',
   'connectionDate',
   'messageDate',
   'visitDate',
@@ -169,6 +216,13 @@ const isStatus = (value: string): value is StatusKey =>
 
 const isCsvHeader = (value: string): value is CsvHeader =>
   (CSV_HEADERS as readonly string[]).includes(value);
+
+const isPriority = (value: string): value is PriorityLevel =>
+  value in PRIORITY_OPTIONS;
+
+function resolvePriority(value: unknown): PriorityLevel {
+  return typeof value === 'string' && isPriority(value) ? value : 'medium';
+}
 
 const parseCsvLine = (line: string): string[] => {
   const row: string[] = [];
@@ -246,6 +300,8 @@ function toCSV(rows: Customer[]) {
           return row.email ?? '';
         case 'status':
           return row.status ?? 'connection_sent';
+        case 'priority':
+          return row.priority ?? 'medium';
         case 'connectionDate':
           return row.connectionDate ?? '';
         case 'messageDate':
@@ -300,6 +356,9 @@ function fromCSV(text: string): Customer[] {
         case 'status':
           if (isStatus(value)) partial.status = value;
           break;
+        case 'priority':
+          if (isPriority(value)) partial.priority = value;
+          break;
         case 'connectionDate':
           partial.connectionDate = value;
           break;
@@ -325,6 +384,7 @@ function fromCSV(text: string): Customer[] {
       id: parsedId,
       tags: parsedTags,
       status: parsedStatus,
+      priority: parsedPriority,
       activityLog,
       createdAt,
       updatedAt,
@@ -341,6 +401,7 @@ function fromCSV(text: string): Customer[] {
       id,
       tags: parsedTags ?? [],
       status: parsedStatus ?? 'connection_sent',
+      priority: parsedPriority ?? 'medium',
       activityLog: activityLog ?? [],
       createdAt: createdAt ?? now,
       updatedAt: updatedAt ?? now,
@@ -380,6 +441,40 @@ function TagChip({
   );
 }
 
+function PriorityBadge({ level }: { level?: PriorityLevel }) {
+  const resolvedLevel = resolvePriority(level);
+  const option = PRIORITY_OPTIONS[resolvedLevel];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border ${option.color}`}
+    >
+      <Flame size={12} /> {option.label}
+    </span>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  description,
+}: {
+  title: string;
+  value: string | number;
+  description: string;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+      <div className="text-sm uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        {title}
+      </div>
+      <div className="text-2xl font-semibold mt-1">{value}</div>
+      <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-snug">
+        {description}
+      </div>
+    </div>
+  );
+}
+
 export default function CustomerTrackerPro() {
   const [customers, setCustomers] = useLocalStorageState<Customer[]>(
     STORAGE_KEY,
@@ -392,6 +487,9 @@ export default function CustomerTrackerPro() {
   const [statusFilter, setStatusFilter] = useState<StatusKey | 'all'>('all');
   const [cityFilter, setCityFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityLevel | 'all'>(
+    'all'
+  );
   const [dark, setDark] = useLocalStorageState<boolean>('ctp_dark', false);
   const [view, setView] = useLocalStorageState<'table' | 'cards'>(
     'ctp_view',
@@ -400,6 +498,32 @@ export default function CustomerTrackerPro() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickFeedback, setQuickFeedback] = useState<string | null>(null);
+  const hasNormalizedStorage = useRef(false);
+
+  useEffect(() => {
+    if (hasNormalizedStorage.current) return;
+    hasNormalizedStorage.current = true;
+    setCustomers((prev) => {
+      let changed = false;
+      const upgraded = prev.map((customer) => {
+        const resolvedPriority = resolvePriority(customer.priority);
+        const activityLog = customer.activityLog ?? [];
+        if (
+          resolvedPriority !== customer.priority ||
+          customer.activityLog == null
+        ) {
+          changed = true;
+          return {
+            ...customer,
+            priority: resolvedPriority,
+            activityLog,
+          };
+        }
+        return customer;
+      });
+      return changed ? upgraded : prev;
+    });
+  }, [setCustomers]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -441,10 +565,96 @@ export default function CustomerTrackerPro() {
         const st = statusFilter === 'all' || c.status === statusFilter;
         const ct = !cityFilter || c.city === cityFilter;
         const tg = !tagFilter || (c.tags ?? []).includes(tagFilter);
-        return inText && st && ct && tg;
+        const pr = priorityFilter === 'all' || c.priority === priorityFilter;
+        return inText && st && ct && tg && pr;
       }),
-    [customers, query, statusFilter, cityFilter, tagFilter]
+    [customers, query, statusFilter, cityFilter, tagFilter, priorityFilter]
   );
+
+  const analytics = useMemo(() => {
+    const total = customers.length;
+    const completed = customers.filter((c) => c.status === 'completed').length;
+    const active = total - completed;
+      const repliedIndex = PROGRESS_ORDER.indexOf('replied');
+      const responded = repliedIndex === -1
+        ? 0
+        : customers.filter(
+            (c) => PROGRESS_ORDER.indexOf(c.status) >= repliedIndex
+          ).length;
+    const responseRate = total ? Math.round((responded / total) * 100) : 0;
+    const conversionRate = total ? Math.round((completed / total) * 100) : 0;
+    const highPriorityOpen = customers.filter(
+      (c) => c.priority === 'high' && c.status !== 'completed'
+    ).length;
+    const highPriorityTotal = customers.filter(
+      (c) => c.priority === 'high'
+    ).length;
+    const scheduledVisits = customers.filter(
+      (c) => c.status === 'visit_scheduled'
+    ).length;
+    const upcomingWeekVisits = customers.filter((c) => {
+      if (!c.visitDate) return false;
+      const visit = new Date(c.visitDate);
+      const diff = visit.getTime() - Date.now();
+      return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
+    }).length;
+    const responseDescription = total
+      ? `${responded}/${total} müşteri geri dönüş sağladı`
+      : 'Henüz müşteri yok';
+    const conversionDescription = total
+      ? `${completed}/${total} müşteri tamamlandı`
+      : 'Veri bekleniyor';
+    return [
+      {
+        title: 'Aktif Pipeline',
+        value: active,
+        description: `${completed} tamamlandı`,
+      },
+      {
+        title: 'Yanıt Oranı',
+        value: `${responseRate}%`,
+        description: responseDescription,
+      },
+      {
+        title: 'Planlı Ziyaretler',
+        value: scheduledVisits,
+        description: `${upcomingWeekVisits} tanesi 7 gün içinde`,
+      },
+      {
+        title: 'Acil Öncelikler',
+        value: highPriorityTotal,
+        description: `${highPriorityOpen} aktif takip`,
+      },
+      {
+        title: 'Dönüşüm Oranı',
+        value: `${conversionRate}%`,
+        description: conversionDescription,
+      },
+    ];
+  }, [customers]);
+
+  const staleCustomers = useMemo(() => {
+    return customers
+      .filter((c) => c.status !== 'completed')
+      .map((customer) => ({
+        customer,
+        days: daysSince(customer.updatedAt ?? customer.createdAt) ?? 0,
+      }))
+      .filter((entry) => entry.days >= 10)
+      .sort((a, b) => b.days - a.days)
+      .slice(0, 5);
+  }, [customers]);
+
+  const highPriorityFocus = useMemo(() => {
+    return customers
+      .filter((c) => c.priority === 'high' && c.status !== 'completed')
+      .map((customer) => ({
+        customer,
+        days: daysSince(customer.updatedAt ?? customer.createdAt) ?? 0,
+      }))
+      .sort((a, b) => b.days - a.days)
+      .slice(0, 5);
+  }, [customers]);
 
   const sameCity = (city: string, excludeId: number) => {
     const relevantStatuses: StatusKey[] = [
@@ -461,21 +671,9 @@ export default function CustomerTrackerPro() {
   };
 
   // Pipeline progress ratio
-  const progressOrder: StatusKey[] = [
-    'connection_sent',
-    'connection_accepted',
-    'message_sent',
-    'replied',
-    'visit_requested',
-    'visit_pending',
-    'visit_scheduled',
-    'email_redirect',
-    'completed',
-  ];
-
   const progressOf = (customer: Customer) => {
-    const idx = progressOrder.indexOf(customer.status);
-    return idx < 0 ? 0 : idx / (progressOrder.length - 1);
+    const idx = PROGRESS_ORDER.indexOf(customer.status);
+    return idx < 0 ? 0 : idx / (PROGRESS_ORDER.length - 1);
   };
 
   // Activity log helpers
@@ -583,14 +781,30 @@ export default function CustomerTrackerPro() {
     );
   };
 
+  const setPriorityLevel = (id: number, level: PriorityLevel) => {
+    setCustomers((prev) =>
+      prev.map((customer) =>
+        customer.id === id
+          ? {
+              ...customer,
+              priority: level,
+              updatedAt: new Date().toISOString(),
+            }
+          : customer
+      )
+    );
+    addLog(id, 'priority', `Öncelik: ${PRIORITY_OPTIONS[level].label}`);
+  };
+
   // Quick add minimal form state
   const [quick, setQuick] = useState<Pick<
     CustomerForm,
-    'companyName' | 'contactName' | 'city'
+    'companyName' | 'contactName' | 'city' | 'priority'
   >>({
     companyName: '',
     contactName: '',
     city: '',
+    priority: 'medium',
   });
   const quickAdd = (): boolean => {
     const companyName = quick.companyName.trim();
@@ -616,7 +830,7 @@ export default function CustomerTrackerPro() {
       activityLog: [quickLog],
     };
     setCustomers((prev) => [rec, ...prev]);
-    setQuick({ companyName: '', contactName: '', city: '' });
+    setQuick({ companyName: '', contactName: '', city: '', priority: 'medium' });
     return true;
   };
 
@@ -950,16 +1164,45 @@ export default function CustomerTrackerPro() {
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-2 bg-white dark:bg-gray-800 rounded-lg px-3 py-2 border border-gray-200 dark:border-gray-700">
+            <Flame size={16} />
+            <select
+              value={priorityFilter}
+              onChange={(e) =>
+                setPriorityFilter(e.target.value as PriorityLevel | 'all')
+              }
+              className="bg-transparent outline-none"
+            >
+              <option value="all">Tüm Öncelikler</option>
+              {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
+                <option key={key} value={key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="text-sm text-gray-600 dark:text-gray-300 ml-auto">
             Toplam: {filtered.length} müşteri
           </div>
+        </div>
+
+        {/* Analytics */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+          {analytics.map((card) => (
+            <StatCard
+              key={card.title}
+              title={card.title}
+              value={card.value}
+              description={card.description}
+            />
+          ))}
         </div>
 
         {/* Quick Add */}
         <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 mb-4">
           <form
             onSubmit={handleQuickSubmit}
-            className="grid grid-cols-1 md:grid-cols-4 gap-2"
+            className="grid grid-cols-1 md:grid-cols-5 gap-2"
           >
             <input
               value={quick.companyName}
@@ -988,6 +1231,22 @@ export default function CustomerTrackerPro() {
               className="px-3 py-2 border rounded-lg bg-transparent"
               autoComplete="address-level2"
             />
+            <select
+              value={quick.priority}
+              onChange={(e) =>
+                setQuick((prev) => ({
+                  ...prev,
+                  priority: e.target.value as PriorityLevel,
+                }))
+              }
+              className="px-3 py-2 border rounded-lg bg-transparent"
+            >
+              {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
+                <option key={key} value={key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <button
               type="submit"
               disabled={!quickReady}
@@ -1066,6 +1325,66 @@ export default function CustomerTrackerPro() {
                   className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded text-sm"
                 >
                   Takip Ettim
+                </button>
+              </Row>
+            ))}
+          </Panel>
+        )}
+
+        {highPriorityFocus.length > 0 && (
+          <Panel
+            title={`Acil Takip Önerileri (${highPriorityFocus.length})`}
+            icon={<Flame className="text-red-600" size={18} />}
+          >
+            {highPriorityFocus.map(({ customer, days }) => (
+              <Row
+                key={customer.id}
+                left={
+                  <div>
+                    <div>
+                      {customer.companyName} – {customer.contactName}
+                    </div>
+                    <div className="text-xs text-red-600 dark:text-red-300">
+                      {days} gündür güncelleme yok
+                    </div>
+                  </div>
+                }
+              >
+                <button
+                  onClick={() => startEdit(customer)}
+                  className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm"
+                >
+                  Şimdi İncele
+                </button>
+              </Row>
+            ))}
+          </Panel>
+        )}
+
+        {staleCustomers.length > 0 && (
+          <Panel
+            title={`Güncelleme Bekleyenler (${staleCustomers.length})`}
+            icon={<AlertCircle className="text-orange-600" size={18} />}
+          >
+            {staleCustomers.map(({ customer, days }) => (
+              <Row
+                key={customer.id}
+                left={
+                  <div>
+                    <div>
+                      {customer.companyName} – {customer.contactName}
+                    </div>
+                    <div className="text-xs text-orange-600 dark:text-orange-300">
+                      {days} gündür temas yok
+                    </div>
+                  </div>
+                }
+              >
+                <button
+                  onClick={() => startEdit(customer)}
+                  className="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1 rounded text-sm"
+                >
+                  Kaydı Aç
                 </button>
               </Row>
             ))}
@@ -1183,6 +1502,22 @@ export default function CustomerTrackerPro() {
                 {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
                   <option key={k} value={k}>
                     {o.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={form.priority}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    priority: e.target.value as PriorityLevel,
+                  }))
+                }
+                className="px-3 py-2 border rounded-lg bg-transparent"
+              >
+                {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
+                  <option key={key} value={key}>
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -1315,6 +1650,7 @@ export default function CustomerTrackerPro() {
                   <th className="px-4 py-3 text-left">Kişi</th>
                   <th className="px-4 py-3 text-left">Şehir</th>
                   <th className="px-4 py-3 text-left">Durum</th>
+                  <th className="px-4 py-3 text-left">Öncelik</th>
                   <th className="px-4 py-3 text-left">İlerleme</th>
                   <th className="px-4 py-3 text-left">Tarihler</th>
                   <th className="px-4 py-3 text-left">İletişim</th>
@@ -1365,6 +1701,26 @@ export default function CustomerTrackerPro() {
                               {o.label}
                             </option>
                           ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={resolvePriority(c.priority)}
+                          onChange={(e) =>
+                            setPriorityLevel(
+                              c.id,
+                              e.target.value as PriorityLevel
+                            )
+                          }
+                          className="px-2 py-1 rounded-full text-sm border bg-transparent"
+                        >
+                          {Object.entries(PRIORITY_OPTIONS).map(
+                            ([key, option]) => (
+                              <option key={key} value={key}>
+                                {option.label}
+                              </option>
+                            )
+                          )}
                         </select>
                       </td>
                       <td className="px-4 py-3 w-48">
@@ -1479,6 +1835,9 @@ export default function CustomerTrackerPro() {
                   {STATUS_OPTIONS[c.status]?.label || c.status}
                 </div>
                 <div className="mb-2">
+                  <PriorityBadge level={c.priority} />
+                </div>
+                <div className="mb-2">
                   <ProgressBar value={progressOf(c)} />
                 </div>
                 <div className="text-sm space-y-1 mb-3">
@@ -1519,6 +1878,23 @@ export default function CustomerTrackerPro() {
                     {Object.entries(STATUS_OPTIONS).map(([k, o]) => (
                       <option key={k} value={k}>
                         {o.label}
+                      </option>
+                    ))}
+                  </select>
+                    <select
+                      value={resolvePriority(c.priority)}
+                      onChange={(e) =>
+                        setPriorityLevel(
+                          c.id,
+                          e.target.value as PriorityLevel
+                        )
+                      }
+                      className="px-2 py-2 rounded border bg-transparent"
+                      title="Öncelik"
+                    >
+                    {Object.entries(PRIORITY_OPTIONS).map(([key, option]) => (
+                      <option key={key} value={key}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
