@@ -1830,6 +1830,9 @@ export default function CustomerTrackerPro() {
                   <PriorityBadge level={c.priority} />
                 </div>
                 <div className="mb-2">
+                  <PriorityBadge level={c.priority} />
+                </div>
+                <div className="mb-2">
                   <ProgressBar value={progressOf(c)} />
                 </div>
                 <div className="text-sm space-y-1 mb-3">
